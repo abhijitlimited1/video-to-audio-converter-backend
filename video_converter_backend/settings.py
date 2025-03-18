@@ -34,6 +34,10 @@ DEBUG = config('DEBUG',  default=False, cast=bool)
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS').split(',')
 
+# settings.py
+FILE_UPLOAD_MAX_MEMORY_SIZE = 524288000  # 500MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 524288000
+
 
 # Application definition
 
