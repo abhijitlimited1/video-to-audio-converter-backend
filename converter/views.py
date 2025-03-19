@@ -40,12 +40,21 @@ class ConvertVideo(APIView):
                                   status=status.HTTP_400_BAD_REQUEST)
 
                 try:
+                    input_data = file.read()
+                    # Mobile-compatible conversion settings
                     out, _ = (
                         ffmpeg
                         .input('pipe:0')
-                        .output('pipe:1', format='mp3', audio_bitrate='192k')
+                        .output(
+                            'pipe:1',
+                            format='mp3',
+                            acodec='libmp3lame',  # Explicit codec
+                            audio_bitrate='192k',
+                            write_xing=0,  # Fix for mobile players
+                            **{'id3v2_version': '3'}  # Mobile-compatible metadata
+                        )
                         .overwrite_output()
-                        .run(input=file.read(), capture_stdout=True, capture_stderr=True)
+                        .run(input=input_data, capture_stdout=True, capture_stderr=True)
                     )
                     output_buffer.write(out)
                 except ffmpeg.Error as e:
@@ -53,7 +62,7 @@ class ConvertVideo(APIView):
                     return Response({'error': f'Conversion error: {e.stderr.decode()}'},
                                   status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # URL handling with free tier optimizations
+            # URL handling
             elif request.data.get('url'):
                 url = request.data['url'].strip()
                 if not url.startswith(('http://', 'https://')):
@@ -66,6 +75,9 @@ class ConvertVideo(APIView):
                         '-x',
                         '--audio-format', 'mp3',
                         '--audio-quality', '192k',
+                        '--embed-thumbnail',  # Add thumbnail for mobile players
+                        '--add-metadata',
+                        '--postprocessor-args', '-id3v2_version 3',
                         '-o', '-',
                         '--quiet',
                         '--force-ipv4',
@@ -76,7 +88,6 @@ class ConvertVideo(APIView):
                         url
                     ]
 
-                    # Add cookies if available
                     cookies_path = os.path.join(settings.BASE_DIR, 'cookies.txt')
                     if os.path.exists(cookies_path):
                         cmd.extend(['--cookies', cookies_path])
@@ -114,12 +125,17 @@ class ConvertVideo(APIView):
                         }, status=status.HTTP_400_BAD_REQUEST)
 
             output_buffer.seek(0)
-            return FileResponse(
+            response = FileResponse(
                 output_buffer,
+                content_type='audio/mpeg',
                 as_attachment=True,
-                filename=f"converted_{uuid.uuid4().hex}.mp3",
-                content_type='audio/mpeg'
+                filename=f"converted_{uuid.uuid4().hex}.mp3"
             )
+            # Mobile-friendly headers
+            response['Content-Disposition'] = f'attachment; filename="converted_{uuid.uuid4().hex}.mp3"'
+            response['Accept-Ranges'] = 'bytes'
+            response['Cache-Control'] = 'no-cache'
+            return response
 
         except Exception as e:
             logger.error(f"General error: {str(e)}", exc_info=True)
