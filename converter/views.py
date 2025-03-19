@@ -10,7 +10,6 @@ from rest_framework import status
 from django.http import FileResponse
 from django.conf import settings
 
-
 logger = logging.getLogger(__name__)
 
 class ConvertVideo(APIView):
@@ -22,17 +21,15 @@ class ConvertVideo(APIView):
                 return Response({'error': 'Please provide input'}, 
                               status=status.HTTP_400_BAD_REQUEST)
 
-            # File upload handling with mobile-compatible settings
+            # File upload handling
             if request.FILES.get('file'):
                 file = request.FILES['file']
-                allowed_mime_types = [
+                allowed_types = [
                     'video/mp4', 'video/quicktime', 
                     'video/x-msvideo', 'video/mpeg', 'video/webm'
                 ]
-                allowed_extensions = ('.mp4', '.mov', '.avi', '.mkv', '.webm')
                 
-                if (file.content_type not in allowed_mime_types or 
-                    not file.name.lower().endswith(allowed_extensions)):
+                if file.content_type not in allowed_types:
                     return Response({'error': 'Unsupported file format'}, 
                                   status=status.HTTP_400_BAD_REQUEST)
 
@@ -42,7 +39,6 @@ class ConvertVideo(APIView):
 
                 try:
                     input_data = file.read()
-                    # Mobile-optimized conversion parameters
                     process = (
                         ffmpeg
                         .input('pipe:0')
@@ -51,32 +47,29 @@ class ConvertVideo(APIView):
                             format='mp3',
                             acodec='libmp3lame',
                             audio_bitrate='192k',
-                            ar='44100',  # Force standard sample rate
-                            ac='2',      # Force stereo
+                            ar='44100',
+                            ac='2',
                             write_xing=0,
-                            **{
-                                'id3v2_version': '3',
-                                'metadata:s:a:0': 'title=Converted Audio',
-                                'metadata:s:a:0': 'artist=Audio Converter',
-                            }
+                            **{'id3v2_version': '3'}
                         )
                         .overwrite_output()
                         .run_async(pipe_stdin=True, pipe_stdout=True, quiet=True)
                     )
-
-                    process.communicate(input=input_data)
+                    process.stdin.write(input_data)
+                    process.stdin.close()
                     output_buffer.write(process.stdout.read())
+                    process.wait()
                     
-                except ffmpeg.Error as e:
-                    logger.error(f"FFmpeg error: {e.stderr.decode()}")
-                    return Response({'error': f'Conversion error: {e.stderr.decode()}'},
+                except Exception as e:
+                    logger.error(f"FFmpeg error: {str(e)}")
+                    return Response({'error': 'File conversion failed'}, 
                                   status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # URL handling with mobile-specific optimizations
+            # URL handling
             elif request.data.get('url'):
                 url = request.data['url'].strip()
                 if not url.startswith(('http://', 'https://')):
-                    return Response({'error': 'Invalid URL format'}, 
+                    return Response({'error': 'Invalid URL format', 'solution': 'Try file upload instead'}, 
                                   status=status.HTTP_400_BAD_REQUEST)
 
                 try:
@@ -85,57 +78,51 @@ class ConvertVideo(APIView):
                         '-x',
                         '--audio-format', 'mp3',
                         '--audio-quality', '192k',
-                        '--embed-thumbnail',
-                        '--add-metadata',
                         '--postprocessor-args', 'ffmpeg:-id3v2_version 3 -ar 44100 -ac 2',
                         '-o', '-',
                         '--quiet',
-                        '--force-ipv4',
-                        '--throttled-rate', '50K',
                         url
                     ]
-
-                    cookies_path = os.path.join(settings.BASE_DIR, 'cookies.txt')
-                    if os.path.exists(cookies_path):
-                        cmd.extend(['--cookies', cookies_path])
 
                     result = subprocess.run(
                         cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
-                        check=True,
                         timeout=300
                     )
+
+                    if result.returncode != 0:
+                        raise subprocess.CalledProcessError(
+                            result.returncode, cmd, result.stdout, result.stderr
+                        )
+
                     output_buffer.write(result.stdout)
                     
                 except subprocess.TimeoutExpired:
-                    return Response({'error': 'Download timed out - try smaller videos'}, 
-                                  status=status.HTTP_408_REQUEST_TIMEOUT)
-                except subprocess.CalledProcessError as e:
-                    error_msg = e.stderr.decode()
-                    logger.error(f"yt-dlp error: {error_msg}")
                     return Response({
-                        'error': 'YouTube conversion failed',
-                        'solution': 'Try downloading the video and uploading it directly'
+                        'error': 'URL processing timed out',
+                        'solution': 'Try uploading the file directly'
+                    }, status=status.HTTP_408_REQUEST_TIMEOUT)
+                except Exception as e:
+                    return Response({
+                        'error': 'URL conversion failed',
+                        'solution': 'Download the video and upload it here'
                     }, status=status.HTTP_400_BAD_REQUEST)
 
             output_buffer.seek(0)
             
-            # Create response with mobile-friendly headers
             response = FileResponse(
                 output_buffer,
                 content_type='audio/mpeg',
                 as_attachment=True,
                 filename=f"audio_{uuid.uuid4().hex}.mp3"
             )
-            response['Content-Length'] = str(output_buffer.getbuffer().nbytes)
-            response['Accept-Ranges'] = 'bytes'
-            response['Cache-Control'] = 'no-store, max-age=0'
+            response['Content-Length'] = output_buffer.getbuffer().nbytes
+            response['Cache-Control'] = 'no-store'
             
             return response
 
         except Exception as e:
-            logger.error(f"General error: {str(e)}", exc_info=True)
+            logger.error(f"Conversion error: {str(e)}")
             return Response({'error': 'Conversion failed'}, 
                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
