@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.http import FileResponse
 from django.conf import settings
+from pydub import AudioSegment
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class ConvertVideo(APIView):
                 return Response({'error': 'Please provide input'}, 
                               status=status.HTTP_400_BAD_REQUEST)
 
-            # File upload handling
+            # File upload handling with mobile-compatible settings
             if request.FILES.get('file'):
                 file = request.FILES['file']
                 allowed_mime_types = [
@@ -41,28 +42,37 @@ class ConvertVideo(APIView):
 
                 try:
                     input_data = file.read()
-                    # Mobile-compatible conversion settings
-                    out, _ = (
+                    # Mobile-optimized conversion parameters
+                    process = (
                         ffmpeg
                         .input('pipe:0')
                         .output(
                             'pipe:1',
                             format='mp3',
-                            acodec='libmp3lame',  # Explicit codec
+                            acodec='libmp3lame',
                             audio_bitrate='192k',
-                            write_xing=0,  # Fix for mobile players
-                            **{'id3v2_version': '3'}  # Mobile-compatible metadata
+                            ar='44100',  # Force standard sample rate
+                            ac='2',      # Force stereo
+                            write_xing=0,
+                            **{
+                                'id3v2_version': '3',
+                                'metadata:s:a:0': 'title=Converted Audio',
+                                'metadata:s:a:0': 'artist=Audio Converter',
+                            }
                         )
                         .overwrite_output()
-                        .run(input=input_data, capture_stdout=True, capture_stderr=True)
+                        .run_async(pipe_stdin=True, pipe_stdout=True, quiet=True)
                     )
-                    output_buffer.write(out)
+
+                    process.communicate(input=input_data)
+                    output_buffer.write(process.stdout.read())
+                    
                 except ffmpeg.Error as e:
                     logger.error(f"FFmpeg error: {e.stderr.decode()}")
                     return Response({'error': f'Conversion error: {e.stderr.decode()}'},
                                   status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-            # URL handling
+            # URL handling with mobile-specific optimizations
             elif request.data.get('url'):
                 url = request.data['url'].strip()
                 if not url.startswith(('http://', 'https://')):
@@ -75,16 +85,13 @@ class ConvertVideo(APIView):
                         '-x',
                         '--audio-format', 'mp3',
                         '--audio-quality', '192k',
-                        '--embed-thumbnail',  # Add thumbnail for mobile players
+                        '--embed-thumbnail',
                         '--add-metadata',
-                        '--postprocessor-args', '-id3v2_version 3',
+                        '--postprocessor-args', 'ffmpeg:-id3v2_version 3 -ar 44100 -ac 2',
                         '-o', '-',
                         '--quiet',
                         '--force-ipv4',
                         '--throttled-rate', '50K',
-                        '--sleep-interval', '30',
-                        '--referer', 'https://www.google.com/',
-                        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                         url
                     ]
 
@@ -107,37 +114,35 @@ class ConvertVideo(APIView):
                 except subprocess.CalledProcessError as e:
                     error_msg = e.stderr.decode()
                     logger.error(f"yt-dlp error: {error_msg}")
-                    
-                    if "429" in error_msg:
-                        return Response({
-                            'error': 'YouTube limit reached 😢 Try again later',
-                            'workaround': 'Download video first, then upload file'
-                        }, status=status.HTTP_429_TOO_MANY_REQUESTS)
-                    elif "Sign in to confirm" in error_msg:
-                        return Response({
-                            'error': 'Age-restricted content',
-                            'solution': 'Use file upload instead'
-                        }, status=status.HTTP_403_FORBIDDEN)
-                    else:
-                        return Response({
-                            'error': 'URL conversion failed',
-                            'alternative': 'Try uploading the video file'
-                        }, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({
+                        'error': 'YouTube conversion failed',
+                        'solution': 'Try downloading the video and uploading it directly'
+                    }, status=status.HTTP_400_BAD_REQUEST)
 
             output_buffer.seek(0)
+            
+            # Create response with mobile-friendly headers
             response = FileResponse(
                 output_buffer,
                 content_type='audio/mpeg',
                 as_attachment=True,
-                filename=f"converted_{uuid.uuid4().hex}.mp3"
+                filename=f"audio_{uuid.uuid4().hex}.mp3"
             )
-            # Mobile-friendly headers
-            response['Content-Disposition'] = f'attachment; filename="converted_{uuid.uuid4().hex}.mp3"'
+            response['Content-Length'] = str(output_buffer.getbuffer().nbytes)
             response['Accept-Ranges'] = 'bytes'
-            response['Cache-Control'] = 'no-cache'
+            response['Cache-Control'] = 'no-store, max-age=0'
+            
             return response
 
         except Exception as e:
             logger.error(f"General error: {str(e)}", exc_info=True)
             return Response({'error': 'Conversion failed'}, 
                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+    def validate_mp3(file_bytes):
+        try:
+            audio = AudioSegment.from_file(io.BytesIO(file_bytes), format="mp3")
+            return True
+        except:
+             return False
