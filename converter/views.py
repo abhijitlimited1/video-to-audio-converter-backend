@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.http import FileResponse
 from django.conf import settings
-from pydub import AudioSegment
+
 
 logger = logging.getLogger(__name__)
 
@@ -139,10 +139,3 @@ class ConvertVideo(APIView):
             return Response({'error': 'Conversion failed'}, 
                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-
-    def validate_mp3(file_bytes):
-        try:
-            audio = AudioSegment.from_file(io.BytesIO(file_bytes), format="mp3")
-            return True
-        except:
-             return False
